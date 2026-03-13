@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>照片自動矯正</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #1f2b47, #0c101c 55%);
+      color: #f4f6fb;
+      display: flex;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    main {
+      width: min(1100px, 100%);
+      border-radius: 18px;
+      background: rgba(9, 14, 22, 0.85);
+      padding: 30px;
+      box-shadow: 0 25px 45px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    h1 {
+      font-size: clamp(1.8rem, 3vw, 2.4rem);
+      margin-bottom: 4px;
+    }
+
+    p.lead {
+      color: #a7b1cd;
+      margin-top: 0;
+      font-size: 1.05rem;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .controls label,
+    .controls button,
+    .controls a {
+      background: #f48fb1;
+      border: none;
+      color: #1a1a1e;
+      font-weight: 600;
+      padding: 10px 18px;
+      border-radius: 999px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.2s ease;
+    }
+
+    .controls label:hover,
+    .controls button:hover,
+    .controls a:hover {
+      background: #ffd1dc;
+    }
+
+    #fileInput {
+      display: none;
+    }
+
+    button:disabled,
+    a.disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .status {
+      font-size: 0.95rem;
+      color: #cbd3ff;
+      min-height: 24px;
+    }
+
+    .preview-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .preview-card {
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .preview-card h2 {
+      font-size: 1rem;
+      margin: 0;
+      color: #f8f8fb;
+    }
+
+    .preview-card canvas {
+      width: 100%;
+      border-radius: 8px;
+      background: #0b1220;
+      min-height: 200px;
+      object-fit: contain;
+    }
+
+    .helper {
+      font-size: 0.9rem;
+      color: #96a4be;
+    }
+
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      accent-color: #f48fb1;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>自動矯正照片角度</h1>
+      <p class="lead">
+        上傳一張照片，系統會分析主要的邊緣傾斜角度，自動旋轉讓主體看起來水平並提供下載。
+      </p>
+    </header>
+
+    <div class="controls">
+      <label for="fileInput">📷 選擇照片</label>
+      <input type="file" id="fileInput" accept="image/*" />
+      <button id="autoBtn" disabled>自動矯正</button>
+      <button id="resetBtn" disabled>重設</button>
+      <a id="downloadLink" class="disabled">下載結果</a>
+    </div>
+
+    <div class="status" id="status">尚未上傳圖片</div>
+
+    <div class="preview-grid">
+      <div class="preview-card">
+        <h2>原始畫面</h2>
+        <canvas id="beforeCanvas"></canvas>
+        <p class="helper">系統將記錄上傳時的角度，以利比較。</p>
+      </div>
+      <div class="preview-card">
+        <h2>矯正後結果</h2>
+        <canvas id="resultCanvas"></canvas>
+        <p class="helper">您可微調或下載最終畫面。</p>
+        <div class="slider-row">
+          <label for="tweakRange">微調（°）</label>
+          <input type="range" id="tweakRange" min="-15" max="15" value="0" disabled />
+        </div>
+      </div>
+    </div>
+
+    <p class="helper" id="angleInfo">角度資訊尚未計算</p>
+  </main>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const autoBtn = document.getElementById("autoBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const downloadLink = document.getElementById("downloadLink");
+    const statusEl = document.getElementById("status");
+    const beforeCanvas = document.getElementById("beforeCanvas");
+    const resultCanvas = document.getElementById("resultCanvas");
+    const tweakRange = document.getElementById("tweakRange");
+    const angleInfo = document.getElementById("angleInfo");
+
+    const beforeCtx = beforeCanvas.getContext("2d");
+    const resultCtx = resultCanvas.getContext("2d");
+
+    let originalImage = null;
+    let detectedAngle = 0;
+    let manualOffset = 0;
+
+    fileInput.addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        originalImage = img;
+        drawBefore();
+        autoLevel();
+        resetBtn.disabled = false;
+        autoBtn.disabled = false;
+        tweakRange.disabled = false;
+        downloadLink.classList.add("disabled");
+        downloadLink.removeAttribute("href");
+        statusEl.textContent = "照片已載入，按「自動矯正」即可觀察效果。";
+      };
+      img.src = url;
+    });
+
+    autoBtn.addEventListener("click", autoLevel);
+    resetBtn.addEventListener("click", () => {
+      if (!originalImage) return;
+      detectedAngle = 0;
+      manualOffset = 0;
+      tweakRange.value = 0;
+      angleInfo.textContent = "角度已重設。請重新自動矯正或微調。";
+      statusEl.textContent = "重新設定後，可再點「自動矯正」或直接微調滑桿。";
+      renderResult();
+    });
+
+    tweakRange.addEventListener("input", () => {
+      manualOffset = Number(tweakRange.value);
+      renderResult();
+    });
+
+    function drawBefore() {
+      if (!originalImage) return;
+      const size = constrainCanvas(beforeCanvas, originalImage);
+      beforeCanvas.width = size.width;
+      beforeCanvas.height = size.height;
+      beforeCtx.clearRect(0, 0, size.width, size.height);
+      beforeCtx.drawImage(originalImage, 0, 0, size.width, size.height);
+    }
+
+    function autoLevel() {
+      if (!originalImage) return;
+      const angle = estimateRotation(originalImage);
+      detectedAngle = angle;
+      manualOffset = 0;
+      tweakRange.value = 0;
+      statusEl.textContent = `系統偵測角度約為 ${angle.toFixed(1)}°，請微調以微調或直接下載。`;
+      angleInfo.textContent = `自動傾斜：${angle.toFixed(1)}°，可透過滑桿修正 ±15°。`;
+      renderResult();
+      downloadLink.classList.remove("disabled");
+      updateDownloadLink();
+    }
+
+    function renderResult() {
+      if (!originalImage) return;
+      const totalAngle = detectedAngle + manualOffset;
+      const rad = (totalAngle * Math.PI) / 180;
+      const diagonal = Math.ceil(
+        Math.abs(originalImage.width * Math.cos(rad)) +
+          Math.abs(originalImage.height * Math.sin(rad))
+      );
+      resultCanvas.width = diagonal;
+      resultCanvas.height = diagonal;
+      resultCtx.clearRect(0, 0, diagonal, diagonal);
+      resultCtx.save();
+      resultCtx.translate(diagonal / 2, diagonal / 2);
+      resultCtx.rotate(-rad);
+      resultCtx.drawImage(
+        originalImage,
+        -originalImage.width / 2,
+        -originalImage.height / 2
+      );
+      resultCtx.restore();
+      angleInfo.textContent = `矯正角度：${totalAngle.toFixed(2)}°（含滑桿 ${manualOffset.toFixed(1)}°）。`;
+      updateDownloadLink();
+    }
+
+    function updateDownloadLink() {
+      if (!resultCanvas.width || !resultCanvas.height) return;
+      downloadLink.href = resultCanvas
+        .toDataURL("image/jpeg", 0.92)
+        .replace("image/jpeg", "image/octet-stream");
+      downloadLink.download = "leveled.jpg";
+      downloadLink.classList.remove("disabled");
+    }
+
+    function constrainCanvas(canvas, image) {
+      const maxSide = 900;
+      const ratio = Math.min(maxSide / image.width, maxSide / image.height, 1);
+      return { width: Math.round(image.width * ratio), height: Math.round(image.height * ratio) };
+    }
+
+    function estimateRotation(image) {
+      const sampleCanvas = document.createElement("canvas");
+      const sampleCtx = sampleCanvas.getContext("2d");
+      const maxSample = 512;
+      const ratio = Math.min(maxSample / image.width, maxSample / image.height, 1);
+      sampleCanvas.width = Math.max(32, Math.round(image.width * ratio));
+      sampleCanvas.height = Math.max(32, Math.round(image.height * ratio));
+      sampleCtx.drawImage(
+        image,
+        0,
+        0,
+        image.width,
+        image.height,
+        0,
+        0,
+        sampleCanvas.width,
+        sampleCanvas.height
+      );
+      const data = sampleCtx.getImageData(
+        0,
+        0,
+        sampleCanvas.width,
+        sampleCanvas.height
+      ).data;
+      const width = sampleCanvas.width;
+      const height = sampleCanvas.height;
+      const gray = new Float32Array(width * height);
+      for (let i = 0; i < width * height; i++) {
+        const offset = i * 4;
+        const r = data[offset];
+        const g = data[offset + 1];
+        const b = data[offset + 2];
+        gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+
+      let sumSin = 0;
+      let sumCos = 0;
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const idx = y * width + x;
+          const gx =
+            -gray[idx - width - 1] -
+            2 * gray[idx - 1] -
+            gray[idx + width - 1] +
+            gray[idx - width + 1] +
+            2 * gray[idx + 1] +
+            gray[idx + width + 1];
+          const gy =
+            -gray[idx - width - 1] -
+            2 * gray[idx - width] -
+            gray[idx - width + 1] +
+            gray[idx + width - 1] +
+            2 * gray[idx + width] +
+            gray[idx + width + 1];
+          const mag = Math.hypot(gx, gy);
+          if (mag < 20) continue;
+          const angle = Math.atan2(gy, gx);
+          sumSin += Math.sin(2 * angle) * mag;
+          sumCos += Math.cos(2 * angle) * mag;
+        }
+      }
+
+      if (sumCos === 0 && sumSin === 0) return 0;
+      const orientation = 0.5 * Math.atan2(sumSin, sumCos);
+      return (orientation * 180) / Math.PI;
+    }
+  </script>
+</body>
+</html>
